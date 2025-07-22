@@ -1,5 +1,6 @@
 use ash::{vk, Entry};
 use winit::window::Window;
+use raw_window_handle::HasRawDisplayHandle;
 use std::ffi::{CStr, CString};
 
 use super::utils::{QueueFamilyIndices, SwapchainSupportDetails, UniformBufferObject, vulkan_debug_callback};
