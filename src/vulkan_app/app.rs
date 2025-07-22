@@ -58,7 +58,8 @@ impl VulkanApp {
     pub fn new(window: &winit::window::Window) -> Self {
         let entry = unsafe { Entry::load().unwrap() };
         let instance = setup::create_instance(&entry, window);
-        let (debug_utils_loader, debug_messenger) = setup::setup_debug_messenger(&entry, &instance);
+        let (debug_utils_loader, debug_messenger) =
+            setup::setup_debug_messenger(&entry, &instance);
         let surface = unsafe {
             ash_window::create_surface(
                 &entry,
@@ -104,7 +105,7 @@ impl VulkanApp {
         let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain).unwrap() };
         let swapchain_image_views =
             Self::create_image_views(&device, &swapchain_images, swapchain_format);
-        let depth_format = Self::find_depth_format(&instance, physical_device);
+        let depth_format = setup::find_depth_format(&instance, physical_device);
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
         let render_pass = setup::create_render_pass(&device, swapchain_format, depth_format);
         let (graphics_pipeline, pipeline_layout) = Self::create_graphics_pipeline(
@@ -203,6 +204,18 @@ impl VulkanApp {
             depth_image_view,
         }
     }
+
+
+    fn pick_physical_device(
+        instance: &ash::Instance,
+        surface_loader: &ash::extensions::khr::Surface,
+        surface: vk::SurfaceKHR,
+    ) -> (vk::PhysicalDevice, QueueFamilyIndices) {
+        let physical_devices = unsafe { instance.enumerate_physical_devices().unwrap() };
+        let physical_device = physical_devices
+            .into_iter()
+            .find(|pdevice| Self::is_device_suitable(instance, surface_loader, surface, *pdevice))
+            .expect("Failed to find a suitable GPU!");
 
         let indices = Self::find_queue_families(instance, surface_loader, surface, physical_device);
         (physical_device, indices)
@@ -480,6 +493,71 @@ impl VulkanApp {
     }
 
 
+    fn create_graphics_pipeline(
+        device: &ash::Device,
+        render_pass: vk::RenderPass,
+        extent: vk::Extent2D,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> (vk::Pipeline, vk::PipelineLayout) {
+        let vert_shader_code = include_bytes!(env!("VERT_SHADER_PATH"));
+        let frag_shader_code = include_bytes!(env!("FRAG_SHADER_PATH"));
+
+        let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
+        let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
+
+        let main_function_name = CString::new("main").unwrap();
+
+        let vert_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(&main_function_name);
+
+        let frag_shader_stage_info = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(&main_function_name);
+
+        let shader_stages = [
+            vert_shader_stage_info.build(),
+            frag_shader_stage_info.build(),
+        ];
+
+        let binding_description = Vertex::get_binding_description();
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(std::slice::from_ref(&binding_description))
+            .vertex_attribute_descriptions(&attribute_descriptions);
+
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
+
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(extent);
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(std::slice::from_ref(&viewport))
+            .scissors(std::slice::from_ref(&scissor));
+
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::builder()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::builder()
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
@@ -700,7 +778,7 @@ impl VulkanApp {
         }
         self.cleanup_swapchain();
 
-        let depth_format = Self::find_depth_format(&self.instance, self.physical_device);
+        let depth_format = setup::find_depth_format(&self.instance, self.physical_device);
         self.render_pass =
             setup::create_render_pass(&self.device, self.swapchain_format, depth_format);
 
@@ -724,7 +802,7 @@ impl VulkanApp {
         self.swapchain_extent = swapchain_extent;
         self.swapchain_image_views =
             Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_format);
-        let depth_format = Self::find_depth_format(&self.instance, self.physical_device);
+        let depth_format = setup::find_depth_format(&self.instance, self.physical_device);
         self.render_pass =
             setup::create_render_pass(&self.device, self.swapchain_format, depth_format);
         let (graphics_pipeline, pipeline_layout) = Self::create_graphics_pipeline(
@@ -916,7 +994,7 @@ impl VulkanApp {
         data: &[u16],
     ) -> (vk::Buffer, vk::DeviceMemory) {
         let buffer_size = (std::mem::size_of::<u16>() * INDICES.len()) as vk::DeviceSize;
-        let (buffer, buffer_memory) = Self::create_buffer(
+        let (buffer, buffer_memory) = setup::create_buffer(
             instance,
             device,
             pdevice,
@@ -946,7 +1024,7 @@ impl VulkanApp {
         data: &[Vertex],
     ) -> (vk::Buffer, vk::DeviceMemory) {
         let buffer_size = (std::mem::size_of::<Vertex>() * VERTICES.len()) as vk::DeviceSize;
-        let (buffer, buffer_memory) = Self::create_buffer(
+        let (buffer, buffer_memory) = setup::create_buffer(
             instance,
             device,
             pdevice,
@@ -976,6 +1054,24 @@ impl VulkanApp {
         num_images: usize,
     ) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
         let buffer_size = std::mem::size_of::<UniformBufferObject>();
+        let mut uniform_buffers = Vec::with_capacity(num_images);
+        let mut uniform_buffers_memory = Vec::with_capacity(num_images);
+
+        for _ in 0..num_images {
+            let (buffer, memory) = setup::create_buffer(
+                instance,
+                device,
+                pdevice,
+                buffer_size as vk::DeviceSize,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            uniform_buffers.push(buffer);
+            uniform_buffers_memory.push(memory);
+        }
+
+        (uniform_buffers, uniform_buffers_memory)
+    }
 
     fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
         let ubo_layout_binding = vk::DescriptorSetLayoutBinding::builder()
@@ -995,6 +1091,33 @@ impl VulkanApp {
         }
     }
 
+    fn create_descriptor_pool(
+        device: &ash::Device,
+        num_images: usize,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> (vk::DescriptorPool, Vec<vk::DescriptorSet>) {
+        let pool_size = vk::DescriptorPoolSize::builder()
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(100)
+            .build();
+
+        let pool_info = vk::DescriptorPoolCreateInfo::builder()
+            .pool_sizes(std::slice::from_ref(&pool_size))
+            .max_sets(100);
+
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None).unwrap() };
+
+        let layouts = vec![descriptor_set_layout; num_images];
+        let allocate_info = vk::DescriptorSetAllocateInfo::builder()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&layouts);
+
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&allocate_info).unwrap() };
+
+        (descriptor_pool, descriptor_sets)
+    }
+
+    fn create_descriptor_sets(
         device: &ash::Device,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layout: vk::DescriptorSetLayout,
@@ -1023,6 +1146,19 @@ impl VulkanApp {
                 .buffer_info(std::slice::from_ref(&buffer_info))
                 .build();
 
+            unsafe { device.update_descriptor_sets(std::slice::from_ref(&descriptor_write), &[]) };
+        }
+
+        descriptor_sets
+    }
+}
+
+impl Drop for VulkanApp {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+            self.cleanup_swapchain();
+            self.device.destroy_buffer(self.index_buffer, None);
             self.device.free_memory(self.index_buffer_memory, None);
             self.device.destroy_buffer(self.vertex_buffer, None);
             self.device.free_memory(self.vertex_buffer_memory, None);
@@ -1037,3 +1173,18 @@ impl VulkanApp {
             self.device.free_memory(self.depth_image_memory, None);
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
+            self.device
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            for i in 0..self.uniform_buffers.len() {
+                self.device.destroy_buffer(self.uniform_buffers[i], None);
+                self.device
+                    .free_memory(self.uniform_buffers_memory[i], None);
+            }
+            self.device.destroy_device(None);
+            self.surface_loader.destroy_surface(self.surface, None);
+            self.debug_utils_loader
+                .destroy_debug_utils_messenger(self.debug_messenger, None);
+            self.instance.destroy_instance(None);
+        }
+    }
+}
